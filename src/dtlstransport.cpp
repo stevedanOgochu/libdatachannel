@@ -18,9 +18,7 @@
 
 #include "dtlstransport.hpp"
 #include "icetransport.hpp"
-#include "message.hpp"
 
-#include <cassert>
 #include <chrono>
 #include <cstring>
 #include <exception>
@@ -76,30 +74,36 @@ DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, shared_ptr<Certific
 	unsigned int flags = GNUTLS_DATAGRAM | (active ? GNUTLS_CLIENT : GNUTLS_SERVER);
 	check_gnutls(gnutls_init(&mSession, flags));
 
-	// RFC 8261: SCTP performs segmentation and reassembly based on the path MTU.
-	// Therefore, the DTLS layer MUST NOT use any compression algorithm.
-	// See https://tools.ietf.org/html/rfc8261#section-5
-	const char *priorities = "SECURE128:-VERS-SSL3.0:-ARCFOUR-128:-COMP-ALL:+COMP-NULL";
-	const char *err_pos = NULL;
-	check_gnutls(gnutls_priority_set_direct(mSession, priorities, &err_pos),
-	             "Unable to set TLS priorities");
+	try {
+		// RFC 8261: SCTP performs segmentation and reassembly based on the path MTU.
+		// Therefore, the DTLS layer MUST NOT use any compression algorithm.
+		// See https://tools.ietf.org/html/rfc8261#section-5
+		const char *priorities = "SECURE128:-VERS-SSL3.0:-ARCFOUR-128:-COMP-ALL:+COMP-NULL";
+		const char *err_pos = NULL;
+		check_gnutls(gnutls_priority_set_direct(mSession, priorities, &err_pos),
+		             "Unable to set TLS priorities");
 
-	gnutls_certificate_set_verify_function(mCertificate->credentials(), CertificateCallback);
-	check_gnutls(
-	    gnutls_credentials_set(mSession, GNUTLS_CRD_CERTIFICATE, mCertificate->credentials()));
+		gnutls_certificate_set_verify_function(mCertificate->credentials(), CertificateCallback);
+		check_gnutls(
+		    gnutls_credentials_set(mSession, GNUTLS_CRD_CERTIFICATE, mCertificate->credentials()));
 
-	gnutls_dtls_set_timeouts(mSession,
-	                         1000,   // 1s retransmission timeout recommended by RFC 6347
-	                         30000); // 30s total timeout
-	gnutls_handshake_set_timeout(mSession, 30000);
+		gnutls_dtls_set_timeouts(mSession,
+		                         1000,   // 1s retransmission timeout recommended by RFC 6347
+		                         30000); // 30s total timeout
+		gnutls_handshake_set_timeout(mSession, 30000);
 
-	gnutls_session_set_ptr(mSession, this);
-	gnutls_transport_set_ptr(mSession, this);
-	gnutls_transport_set_push_function(mSession, WriteCallback);
-	gnutls_transport_set_pull_function(mSession, ReadCallback);
-	gnutls_transport_set_pull_timeout_function(mSession, TimeoutCallback);
+		gnutls_session_set_ptr(mSession, this);
+		gnutls_transport_set_ptr(mSession, this);
+		gnutls_transport_set_push_function(mSession, WriteCallback);
+		gnutls_transport_set_pull_function(mSession, ReadCallback);
+		gnutls_transport_set_pull_timeout_function(mSession, TimeoutCallback);
 
-	mRecvThread = std::thread(&DtlsTransport::runRecvLoop, this);
+		mRecvThread = std::thread(&DtlsTransport::runRecvLoop, this);
+
+	} catch (...) {
+		gnutls_deinit(mSession);
+		throw;
+	}
 }
 
 DtlsTransport::~DtlsTransport() {
@@ -170,7 +174,7 @@ void DtlsTransport::runRecvLoop() {
 				throw std::runtime_error("MTU is too low");
 
 		} while (ret == GNUTLS_E_INTERRUPTED || ret == GNUTLS_E_AGAIN ||
-		         !check_gnutls(ret, "TLS handshake failed"));
+		         !check_gnutls(ret, "DTLS handshake failed"));
 
 		// RFC 8261: DTLS MUST support sending messages larger than the current path MTU
 		// See https://tools.ietf.org/html/rfc8261#section-5
