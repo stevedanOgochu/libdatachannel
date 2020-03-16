@@ -53,7 +53,6 @@ static bool check_gnutls(int ret, const string &message = "GnuTLS error") {
 
 namespace rtc {
 
-<<<<<<< HEAD
 void TlsTransport::Init() {
 	// Nothing to do
 }
@@ -97,7 +96,7 @@ TlsTransport::~TlsTransport() {
 	gnutls_deinit(mSession);
 }
 
-bool DtlsTransport::stop() {
+bool TlsTransport::stop() {
 	if (!Transport::stop())
 		return false;
 
@@ -130,6 +129,8 @@ void TlsTransport::incoming(message_ptr message) {
 void TlsTransport::runRecvLoop() {
 	const size_t bufferSize = 4096;
 
+	changeState(State::Connecting);
+
 	// Handshake loop
 	try {
 		int ret;
@@ -140,8 +141,11 @@ void TlsTransport::runRecvLoop() {
 
 	} catch (const std::exception &e) {
 		PLOG_ERROR << "TLS handshake: " << e.what();
+		changeState(State::Failed);
 		return;
 	}
+
+	changeState(State::Connected);
 
 	// Receive loop
 	try {
@@ -168,12 +172,12 @@ void TlsTransport::runRecvLoop() {
 				recv(make_message(b, b + ret));
 			}
 		}
-
 	} catch (const std::exception &e) {
 		PLOG_ERROR << "TLS recv: " << e.what();
 	}
 
 	PLOG_INFO << "TLS disconnected";
+	changeState(State::Disconnected);
 	recv(nullptr);
 }
 
@@ -367,13 +371,17 @@ void TlsTransport::runRecvLoop() {
 			outgoing(make_message(buffer, buffer + len));
 
 		while (auto next = mIncomingQueue.pop()) {
-			auto message = *next;
+			message_ptr message = *next;
+			message_ptr decrypted;
+
 			BIO_write(mInBio, message->data(), message->size());
+
 			int ret = SSL_read(mSsl, buffer, bufferSize);
 			if (!check_openssl_ret(mSsl, ret))
 				break;
 
-			auto received = ret > 0 ? make_message(buffer, buffer + ret) : nullptr;
+			if (ret > 0)
+				decrypted = make_message(buffer, buffer + ret);
 
 			while (int len = BIO_read(mOutBio, buffer, bufferSize))
 				outgoing(make_message(buffer, buffer + len));
@@ -381,8 +389,8 @@ void TlsTransport::runRecvLoop() {
 			if (!initFinished && SSL_is_init_finished(mSsl))
 				initFinished = true;
 
-			if (received)
-				recv(received);
+			if (decrypted)
+				recv(decrypted);
 		}
 	} catch (const std::exception &e) {
 		PLOG_ERROR << "TLS recv: " << e.what();
