@@ -220,6 +220,7 @@ void SctpTransport::shutdown() {
 
 bool SctpTransport::send(message_ptr message) {
 	std::lock_guard lock(mSendMutex);
+
 	if (!message)
 		return mSendQueue.empty();
 

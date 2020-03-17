@@ -111,6 +111,8 @@ bool TlsTransport::send(message_ptr message) {
 	if (!message)
 		return false;
 
+	PLOG_VERBOSE << "Send size=" << message->size();
+
 	ssize_t ret;
 	do {
 		ret = gnutls_record_send(mSession, message->data(), message->size());
@@ -128,11 +130,12 @@ void TlsTransport::incoming(message_ptr message) {
 
 void TlsTransport::runRecvLoop() {
 	const size_t bufferSize = 4096;
-
-	changeState(State::Connecting);
+	char buffer[bufferSize];
 
 	// Handshake loop
 	try {
+		changeState(State::Connecting);
+
 		int ret;
 		do {
 			ret = gnutls_handshake(mSession);
@@ -145,12 +148,12 @@ void TlsTransport::runRecvLoop() {
 		return;
 	}
 
-	changeState(State::Connected);
-
 	// Receive loop
 	try {
+		PLOG_INFO << "TLS handshake finished";
+		changeState(State::Connected);
+
 		while (true) {
-			char buffer[bufferSize];
 			ssize_t ret;
 			do {
 				ret = gnutls_record_recv(mSession, buffer, bufferSize);
@@ -176,7 +179,7 @@ void TlsTransport::runRecvLoop() {
 		PLOG_ERROR << "TLS recv: " << e.what();
 	}
 
-	PLOG_INFO << "TLS disconnected";
+	PLOG_INFO << "TLS closed";
 	changeState(State::Disconnected);
 	recv(nullptr);
 }
@@ -364,8 +367,10 @@ void TlsTransport::incoming(message_ptr message) {
 void TlsTransport::runRecvLoop() {
 	const size_t bufferSize = 4096;
 	byte buffer[bufferSize];
-	bool initFinished = false;
+
 	try {
+		changeState(State::Connecting);
+
 		SSL_do_handshake(mSsl);
 		while (int len = BIO_read(mOutBio, buffer, bufferSize))
 			outgoing(make_message(buffer, buffer + len));
@@ -386,8 +391,10 @@ void TlsTransport::runRecvLoop() {
 			while (int len = BIO_read(mOutBio, buffer, bufferSize))
 				outgoing(make_message(buffer, buffer + len));
 
-			if (!initFinished && SSL_is_init_finished(mSsl))
-				initFinished = true;
+			if (state() == State::Connecting && SSL_is_init_finished(mSsl)) {
+				PLOG_INFO << "TLS handshake finished";
+				changeState(State::Connected);
+			}
 
 			if (decrypted)
 				recv(decrypted);
@@ -396,8 +403,8 @@ void TlsTransport::runRecvLoop() {
 		PLOG_ERROR << "TLS recv: " << e.what();
 	}
 
-	if (initFinished) {
-		PLOG_INFO << "TLS disconnected";
+	if (state() == State::Connected) {
+		PLOG_INFO << "TLS closed";
 		recv(nullptr);
 	} else {
 		PLOG_ERROR << "TLS handshake failed";
