@@ -64,12 +64,13 @@ void DtlsTransport::Cleanup() {
 DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, shared_ptr<Certificate> certificate,
                              verifier_callback verifierCallback, state_callback stateChangeCallback)
     : Transport(lower, std::move(stateChangeCallback)), mCertificate(certificate),
-      mVerifierCallback(std::move(verifierCallback)) {
+      mVerifierCallback(std::move(verifierCallback)),
+      mIsClient(lower->role() == Description::Role::Active) {
 
 	PLOG_DEBUG << "Initializing DTLS transport (GnuTLS)";
 
-	bool active = lower->role() == Description::Role::Active;
-	unsigned int flags = GNUTLS_DATAGRAM | (active ? GNUTLS_CLIENT : GNUTLS_SERVER);
+	unsigned int flags = GNUTLS_DATAGRAM | (mIsClient ? GNUTLS_CLIENT : GNUTLS_SERVER);
+
 	check_gnutls(gnutls_init(&mSession, flags));
 
 	try {
@@ -149,6 +150,10 @@ void DtlsTransport::incoming(message_ptr message) {
 	mIncomingQueue.push(message);
 }
 
+void DtlsTransport::postHandshake() {
+	// Dummy
+}
+
 void DtlsTransport::runRecvLoop() {
 	const size_t maxMtu = 4096;
 
@@ -181,6 +186,7 @@ void DtlsTransport::runRecvLoop() {
 	try {
 		PLOG_INFO << "DTLS handshake finished";
 		changeState(State::Connected);
+		postHandshake();
 
 		const size_t bufferSize = maxMtu;
 		char buffer[bufferSize];
@@ -353,8 +359,7 @@ void DtlsTransport::Cleanup() {
 DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, shared_ptr<Certificate> certificate,
                              verifier_callback verifierCallback, state_callback stateChangeCallback)
     : Transport(lower, std::move(stateChangeCallback)), mCertificate(certificate),
-      mVerifierCallback(std::move(verifierCallback)) {
-
+      mVerifierCallback(std::move(verifierCallback), mIsClient(lower->role() == Description::Role::Active) {
 	PLOG_DEBUG << "Initializing DTLS transport (OpenSSL)";
 
 	if (!(mCtx = SSL_CTX_new(DTLS_method())))
@@ -386,7 +391,7 @@ DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, shared_ptr<Certific
 
 	SSL_set_ex_data(mSsl, TransportExIndex, this);
 
-	if (lower->role() == Description::Role::Active)
+	if (mIsClient)
 		SSL_set_connect_state(mSsl);
 	else
 		SSL_set_accept_state(mSsl);
@@ -445,6 +450,10 @@ void DtlsTransport::incoming(message_ptr message) {
 	mIncomingQueue.push(message);
 }
 
+void DtlsTransport::postHandshake() {
+	// Dummy
+}
+
 void DtlsTransport::runRecvLoop() {
 	const size_t maxMtu = 4096;
 	try {
@@ -476,6 +485,7 @@ void DtlsTransport::runRecvLoop() {
 
 						PLOG_INFO << "DTLS handshake finished";
 						changeState(State::Connected);
+						postHandshake();
 					}
 				} else {
 					int ret = SSL_read(mSsl, buffer, bufferSize);
